@@ -1,71 +1,64 @@
-from rest_framework.parsers import MultiPartParser, FormParser
+import os
+import pandas as pd
+from django.conf import settings
+from django.core.files.storage import default_storage
+from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, generics
-from django.shortcuts import get_object_or_404
+from rest_framework.parsers import MultiPartParser
+from rest_framework import status
 from .models import Appointment
-from .serializers import AppointmentSerializer
-import csv
-import io
 
-class AppointmentView(generics.GenericAPIView):
-    serializer_class = AppointmentSerializer
-    queryset = Appointment.objects.all()
-    parser_classes = (MultiPartParser, FormParser)
+class UploadCSVView(APIView):
+    parser_classes = [MultiPartParser]
 
+    def post(self, request, format=None):
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Define the fixed folder
+        upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads')
+        os.makedirs(upload_dir, exist_ok=True)
+
+        # Save the file
+        file_path = os.path.join(upload_dir, file.name)
+        with default_storage.open(file_path, 'wb+') as destination:
+            for chunk in file.chunks():
+                destination.write(chunk)
+
+        # Read CSV and store data
+        df = pd.read_csv(file_path)
+        for _, row in df.iterrows():
+            patient_name = row['Full Name (Code)']
+            patient_folder = os.path.join(upload_dir, patient_name)
+            os.makedirs(patient_folder, exist_ok=True)
+
+            # Save patient data in the database
+            Appointment.objects.create(
+                date=row['Date'],
+                time=row['Time'],
+                full_name=row['Full Name (Code)'],
+                location_description=row['Location Description (Code)'],
+                mrn=row['MRN'],
+                appointment_description=row['Appointment Description'],
+                appointment_comment=row.get('Appointment Comment', ''),
+                appointment_type=row['Appointment Type'],
+                customize_date=row['Customize Date (Appt Details)'],
+                default_division=row['Default Division'],
+                location_region=row['Location Region'],
+                location_type=row['Location Type'],
+                main_appt=row['Main Appt'],
+                phressia_filter=row['Phressia Filter'],
+                provider_type_group=row['Provider Type (group)'],
+                quality_specialty=row['Quality Specialty'],
+                walk_in_filter=row['Walk-In Filter'],
+                appt_scheduled_by=row['Appt Scheduled First Time By'],
+                provider_type=row['Provider Type']
+            )
+
+        return Response({'message': 'File uploaded and processed successfully'}, status=status.HTTP_201_CREATED)
+
+class AppointmentListView(APIView):
     def get(self, request):
-        """Retrieve all appointments"""
-        appointments = Appointment.objects.all()
-        serializer = self.serializer_class(appointments, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def post(self, request):
-        """Create a new appointment or upload CSV"""
-        if 'file' in request.FILES:
-            csv_file = request.FILES['file']
-            if not csv_file.name.endswith('.csv'):
-                return Response({'error': 'Only CSV files are allowed'}, status=status.HTTP_400_BAD_REQUEST)
-
-            data_set = csv_file.read().decode('utf-8')
-            io_string = io.StringIO(data_set)
-            reader = csv.reader(io_string)
-            next(reader)  # Skip header
-
-            for row in reader:
-                Appointment.objects.create(
-                    date=row[0],
-                    time=row[1],
-                    full_name=row[2],
-                    location_description=row[3],
-                    mrn=row[4],
-                    appointment_description=row[5],
-                    appointment_comment=row[6],
-                    appointment_type=row[7],
-                    customize_date=row[8],
-                    default_division=row[9],
-                    location_region=row[10],
-                    location_type=row[11],
-                    main_appt=row[12],
-                    phressia_filter=row[13],
-                    provider_type_group=row[14],
-                    quality_specialty=row[15],
-                    walk_in_filter=row[16],
-                    appt_scheduled_by=row[17],
-                    provider_type=row[18]
-                )
-
-            return Response({'message': 'CSV uploaded successfully'}, status=status.HTTP_201_CREATED)
-        else:
-            serializer = self.serializer_class(data=request.data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def put(self, request, pk):
-        """Update an existing appointment"""
-        appointment = get_object_or_404(Appointment, pk=pk)
-        serializer = self.serializer_class(appointment, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        appointments = Appointment.objects.all().values()
+        return Response(appointments, status=status.HTTP_200_OK)
